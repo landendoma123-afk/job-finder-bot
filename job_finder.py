@@ -1,6 +1,7 @@
 import os
 import json
 import html
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -52,25 +53,21 @@ def save_seen(seen):
     SEEN_FILE.write_text(json.dumps(sorted(list(seen)), indent=2), encoding="utf-8")
 
 
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    response = requests.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "disable_web_page_preview": True,
-        },
-        timeout=20,
-    )
-    response.raise_for_status()
-
-
 def clean_text(value: str) -> str:
     value = html.unescape(value or "")
-    return " ".join(value.split())
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = " ".join(value.split())
+    return value.strip()
+
+
+def escape_html(text: str) -> str:
+    return html.escape(text or "")
+
+
+def truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1].rstrip() + "…"
 
 
 def get_feed_urls():
@@ -102,12 +99,13 @@ def classify_post(text: str):
 
 
 def generate_replies(title: str, job_type: str):
-    short_title = title[:120]
+    short_title = truncate(title, 90)
+
     if job_type == "Higher Value":
         return [
             f"Hey — I can help build this. I work on custom tools, automations, and lightweight apps. If you send me the scope, budget, and deadline, I can tell you quickly if I’m a fit.",
             f"This looks like something I can take on. I can move fast on builds like this, especially if you already know the main features you want. Feel free to DM the details.",
-            f"I’m interested in this project. I build scripts, automations, and web tools, so {short_title!r} sounds in my lane. Send me the exact requirements and I’ll reply with a plan."
+            f"I’m interested in this project. I build scripts, automations, and web tools, so '{short_title}' sounds in my lane. Send me the exact requirements and I’ll reply with a plan."
         ]
 
     return [
@@ -117,19 +115,54 @@ def generate_replies(title: str, job_type: str):
     ]
 
 
-def format_message(subreddit: str, title: str, link: str, job_type: str, matched_terms, score: int, replies):
-    terms = ", ".join(matched_terms[:8]) if matched_terms else "keyword match"
+def send_telegram(message: str, link: str, replies):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+    reply_1 = truncate(replies[0], 220)
+    reply_2 = truncate(replies[1], 220)
+    reply_3 = truncate(replies[2], 220)
+
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "Open Reddit Post", "url": link}],
+            [{"text": "Copy Reply 1", "switch_inline_query_current_chat": reply_1}],
+            [{"text": "Copy Reply 2", "switch_inline_query_current_chat": reply_2}],
+            [{"text": "Copy Reply 3", "switch_inline_query_current_chat": reply_3}],
+        ]
+    }
+
+    response = requests.post(
+        url,
+        json={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False,
+            "reply_markup": keyboard,
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+
+
+def format_message(subreddit: str, title: str, summary: str, link: str, job_type: str, matched_terms, score: int):
+    safe_title = escape_html(truncate(title, 140))
+    safe_summary = escape_html(truncate(summary, 220))
+    safe_terms = escape_html(", ".join(matched_terms[:6]) if matched_terms else "keyword match")
+
+    emoji = "💰" if job_type == "Higher Value" else "⚡"
+
     return (
-        f"🔥 New Reddit Job\\n\\n"
-        f"Type: {job_type}\\n"
-        f"Score: {score}\\n"
-        f"Subreddit: r/{subreddit}\\n"
-        f"Title: {title}\\n\\n"
-        f"Matched terms: {terms}\\n\\n"
-        f"Link:\\n{link}\\n\\n"
-        f"Reply option 1:\\n{replies[0]}\\n\\n"
-        f"Reply option 2:\\n{replies[1]}\\n\\n"
-        f"Reply option 3:\\n{replies[2]}"
+        f"{emoji} <b>{escape_html(job_type)} Job</b>\n"
+        f"<b>Subreddit:</b> r/{escape_html(subreddit)}\n"
+        f"<b>Score:</b> {score}\n\n"
+        f"<b>{safe_title}</b>\n\n"
+        f"{safe_summary}\n\n"
+        f"<b>Matched:</b> {safe_terms}\n"
+        f"<a href=\"{escape_html(link)}\">Tap here to open the Reddit post</a>"
     )
 
 
@@ -147,7 +180,6 @@ def run():
 
     for feed_url in get_feed_urls():
         feed = feedparser.parse(feed_url)
-
         subreddit = urlparse(feed_url).path.split("/")[2]
 
         for entry in feed.entries[:20]:
@@ -161,10 +193,19 @@ def run():
             text = f"{title}\n{summary}"
 
             job_type, matched_terms, score = classify_post(text)
+
             if job_type:
                 replies = generate_replies(title, job_type)
-                message = format_message(subreddit, title, link, job_type, matched_terms, score, replies)
-                send_telegram(message)
+                message = format_message(
+                    subreddit=subreddit,
+                    title=title,
+                    summary=summary,
+                    link=link,
+                    job_type=job_type,
+                    matched_terms=matched_terms,
+                    score=score,
+                )
+                send_telegram(message, link, replies)
 
             new_seen.add(unique_id)
 
@@ -172,5 +213,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run() 
-
+    run()
