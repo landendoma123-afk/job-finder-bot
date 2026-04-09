@@ -103,67 +103,62 @@ def generate_replies(title: str, job_type: str):
 
     if job_type == "Higher Value":
         return [
-            f"Hey — I can help build this. I work on custom tools, automations, and lightweight apps. If you send me the scope, budget, and deadline, I can tell you quickly if I’m a fit.",
-            f"This looks like something I can take on. I can move fast on builds like this, especially if you already know the main features you want. Feel free to DM the details.",
+            "Hey — I can help build this. I work on custom tools, automations, and lightweight apps. If you send me the scope, budget, and deadline, I can tell you quickly if I’m a fit.",
+            "This looks like something I can take on. I can move fast on builds like this, especially if you already know the main features you want. Feel free to DM the details.",
             f"I’m interested in this project. I build scripts, automations, and web tools, so '{short_title}' sounds in my lane. Send me the exact requirements and I’ll reply with a plan."
         ]
 
     return [
-        f"Hey — I can probably knock this out pretty quickly. I build scripts and automations, and this looks like a solid fit. What deadline and budget are you aiming for?",
-        f"I can help with this. I’ve handled similar small automation or script tasks before and can move fast. If you message me the exact task, I’ll tell you right away if I can do it.",
-        f"This looks like something I can take care of fast. Send over the details and I’ll reply with a quick turnaround estimate and price."
+        "Hey — I can probably knock this out pretty quickly. I build scripts and automations, and this looks like a solid fit. What deadline and budget are you aiming for?",
+        "I can help with this. I’ve handled similar small automation or script tasks before and can move fast. If you message me the exact task, I’ll tell you right away if I can do it.",
+        "This looks like something I can take care of fast. Send over the details and I’ll reply with a quick turnaround estimate and price."
     ]
 
 
-def send_telegram(message: str, link: str, replies):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
-
+def send_message(text: str, buttons=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    reply_1 = truncate(replies[0], 220)
-    reply_2 = truncate(replies[1], 220)
-    reply_3 = truncate(replies[2], 220)
-
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "Open Reddit Post", "url": link}],
-            [{"text": "Copy Reply 1", "switch_inline_query_current_chat": reply_1}],
-            [{"text": "Copy Reply 2", "switch_inline_query_current_chat": reply_2}],
-            [{"text": "Copy Reply 3", "switch_inline_query_current_chat": reply_3}],
-        ]
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False,
     }
+    if buttons:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
 
-    response = requests.post(
-        url,
-        json={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-            "reply_markup": keyboard,
-        },
-        timeout=20,
-    )
+    response = requests.post(url, json=payload, timeout=20)
     response.raise_for_status()
 
 
-def format_message(subreddit: str, title: str, summary: str, link: str, job_type: str, matched_terms, score: int):
-    safe_title = escape_html(truncate(title, 140))
-    safe_summary = escape_html(truncate(summary, 220))
-    safe_terms = escape_html(", ".join(matched_terms[:6]) if matched_terms else "keyword match")
-
+def send_job_alert(subreddit: str, title: str, summary: str, link: str, job_type: str, matched_terms, score: int):
     emoji = "💰" if job_type == "Higher Value" else "⚡"
 
-    return (
-        f"{emoji} <b>{escape_html(job_type)} Job</b>\n"
-        f"<b>Subreddit:</b> r/{escape_html(subreddit)}\n"
-        f"<b>Score:</b> {score}\n\n"
+    safe_title = escape_html(truncate(title, 120))
+    safe_summary = escape_html(truncate(summary, 140))
+    safe_terms = escape_html(", ".join(matched_terms[:4]) if matched_terms else "match")
+
+    main_text = (
+        f"{emoji} <b>{escape_html(job_type)}</b>\n"
+        f"<b>r/{escape_html(subreddit)}</b> • Score {score}\n\n"
         f"<b>{safe_title}</b>\n\n"
         f"{safe_summary}\n\n"
-        f"<b>Matched:</b> {safe_terms}\n"
-        f"<a href=\"{escape_html(link)}\">Tap here to open the Reddit post</a>"
+        f"<b>Tags:</b> {safe_terms}"
     )
+
+    buttons = [
+        [{"text": "Open Post", "url": link}]
+    ]
+
+    send_message(main_text, buttons=buttons)
+
+
+def send_reply_options(replies):
+    for i, reply in enumerate(replies, start=1):
+        text = (
+            f"<b>Reply {i}</b>\n\n"
+            f"{escape_html(reply)}"
+        )
+        send_message(text)
 
 
 def entry_id(entry):
@@ -175,6 +170,9 @@ def entry_id(entry):
 
 
 def run():
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
+
     seen = load_seen()
     new_seen = set(seen)
 
@@ -196,7 +194,7 @@ def run():
 
             if job_type:
                 replies = generate_replies(title, job_type)
-                message = format_message(
+                send_job_alert(
                     subreddit=subreddit,
                     title=title,
                     summary=summary,
@@ -205,7 +203,7 @@ def run():
                     matched_terms=matched_terms,
                     score=score,
                 )
-                send_telegram(message, link, replies)
+                send_reply_options(replies)
 
             new_seen.add(unique_id)
 
